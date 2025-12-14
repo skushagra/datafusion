@@ -19,14 +19,14 @@ use std::any::Any;
 use std::sync::Arc;
 
 use arrow::array::{Array, Int64Array};
-use arrow::datatypes::DataType;
+use arrow::datatypes::{DataType, Field, FieldRef};
 use arrow::datatypes::DataType::{Int32, Int64};
 use datafusion_common::cast::as_int32_array;
 use datafusion_common::{
     DataFusionError, Result, ScalarValue, exec_err, utils::take_function_args,
 };
 use datafusion_expr::Signature;
-use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Volatility};
+use datafusion_expr::{ColumnarValue, ScalarFunctionArgs, ScalarUDFImpl, Volatility, ReturnFieldArgs};
 
 /// <https://spark.apache.org/docs/latest/api/sql/index.html#factorial>
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -64,7 +64,14 @@ impl ScalarUDFImpl for SparkFactorial {
     }
 
     fn return_type(&self, _arg_types: &[DataType]) -> Result<DataType> {
-        Ok(Int64)
+        datafusion_common::internal_err!(
+            "return_type should not be called, use return_field_from_args instead"
+        )
+    }
+
+    fn return_field_from_args(&self, args: ReturnFieldArgs) -> Result<FieldRef> {
+        let nullable = args.arg_fields.iter().any(|f| f.is_nullable());
+        Ok(Arc::new(Field::new(self.name(), Int64, nullable)))
     }
 
     fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
@@ -191,4 +198,39 @@ mod test {
 
         assert_eq!(actual, expected);
     }
+
+    #[test]
+    fn test_factorial_nullability() {
+        use arrow::array::{Int32Array, Int64Array};
+        use datafusion_common::cast::as_int64_array;
+        use datafusion_common::ScalarValue;
+        use datafusion_expr::ColumnarValue;
+        use std::sync::Arc;
+
+        let scalar_null = ColumnarValue::Scalar(ScalarValue::Int32(None));
+        let result = spark_factorial(&[scalar_null]).unwrap();
+
+        match result {
+            ColumnarValue::Scalar(ScalarValue::Int64(val)) => {
+                assert!(val.is_none(), "Expected NULL output for NULL input");
+            }
+            _ => panic!("Expected nullable Int64 scalar"),
+        }
+
+        let input = Int32Array::from(vec![None, None, None]);
+        let args = ColumnarValue::Array(Arc::new(input));
+        let result = spark_factorial(&[args]).unwrap();
+
+        let array = match result {
+            ColumnarValue::Array(array) => array,
+            _ => panic!("Expected array output"),
+        };
+
+        let actual = as_int64_array(&array).unwrap();
+        let expected = Int64Array::from(vec![None, None, None]);
+
+        assert_eq!(actual, &expected);
+    }
+
+
 }
